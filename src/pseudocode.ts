@@ -934,15 +934,29 @@ const parsePseudocode = (text: string): ParseResult => {
   pushSlots('main', mainScopeVars)
   functionScopes.forEach((scope) => pushSlots(`fn:${scope.name}`, scope.vars))
 
-  const buildTraceArray = (scope: string, mode: 'value' | 'cleared' | 'empty' = 'value') => {
+  const scopeVarMap = new Map<string, string[]>()
+  scopeVarMap.set('main', mainScopeVars)
+  functionScopes.forEach((scope) => scopeVarMap.set(`fn:${scope.name}`, scope.vars))
+
+  const buildTraceArrayFor = (
+    scope: string,
+    names: string[],
+    mode: 'value' | 'cleared' | 'empty' | 'force' = 'value'
+  ) => {
     if (!variableSlots.length) return '[]'
+    const nameSet = new Set(names)
     const entries = variableSlots.map((slot) => {
-      if (slot.scope !== scope) return '""'
+      if (slot.scope !== scope || !nameSet.has(slot.name)) return '""'
       if (mode === 'cleared') return `{ __cleared: true, value: ${slot.name} }`
       if (mode === 'empty') return '""'
+      if (mode === 'force') return `{ __force: true, value: ${slot.name} }`
       return `(typeof ${slot.name} === "undefined" ? "" : ${slot.name})`
     })
     return `[${entries.join(', ')}]`
+  }
+
+  const buildTraceArray = (scope: string, mode: 'value' | 'cleared' | 'empty' | 'force' = 'value') => {
+    return buildTraceArrayFor(scope, scopeVarMap.get(scope) ?? [], mode)
   }
 
   const jsLines: string[] = []
@@ -957,6 +971,7 @@ const parsePseudocode = (text: string): ParseResult => {
   const emitBody = (body: BodyLine[], locals: Set<string>, arrays: Map<string, number>) => {
     const lines: string[] = []
     let indent = 1
+    let loopIndex = 0
     const pushLine = (text: string, indentOffset = 0) => {
       const level = Math.max(0, indent + indentOffset)
       lines.push(`${'  '.repeat(level)}${text}`)
@@ -978,7 +993,7 @@ const parsePseudocode = (text: string): ParseResult => {
         const arrayMatch = parseArrayAccess(target)
         if (arrayMatch) {
           const name = arrayMatch[1]
-          const index = translateIndices(arrayMatch[2])
+          const index = `(${translateIndices(arrayMatch[2])}) - 1`
           pushLine(`scanf("%99s", ${name}[${index}]);`)
           return
         }
@@ -1001,7 +1016,16 @@ const parsePseudocode = (text: string): ParseResult => {
       if (paraMatch) {
         const startExpr = translateIndices(paraMatch[2])
         const endExpr = translateIndices(paraMatch[3])
-        pushLine(`for (int ${paraMatch[1]} = ${startExpr}; ${paraMatch[1]} <= ${endExpr}; ${paraMatch[1]} += 1) {`)
+        const idx = loopIndex++
+        const startVar = `__start${idx}`
+        const endVar = `__end${idx}`
+        const stepVar = `__step${idx}`
+        pushLine(`int ${startVar} = ${startExpr};`)
+        pushLine(`int ${endVar} = ${endExpr};`)
+        pushLine(`int ${stepVar} = ${startVar} <= ${endVar} ? 1 : -1;`)
+        pushLine(
+          `for (int ${paraMatch[1]} = ${startVar}; (${stepVar} > 0) ? ${paraMatch[1]} <= ${endVar} : ${paraMatch[1]} >= ${endVar}; ${paraMatch[1]} += ${stepVar}) {`
+        )
         indent += 1
         return
       }
@@ -1066,14 +1090,15 @@ const parsePseudocode = (text: string): ParseResult => {
   const emitJsBody = (
     body: BodyLine[],
     locals: Set<string>,
-    traceVars: string,
     clearVars: string | null,
     outputVars: string,
+    scopeKey: string,
     arrays: Map<string, number>
   ) => {
     const lines: string[] = []
     let indent = 1
     let outIndex = 0
+    let loopIndex = 0
     const pushLine = (text: string, indentOffset = 0) => {
       const level = Math.max(0, indent + indentOffset)
       lines.push(`${'  '.repeat(level)}${text}`)
@@ -1089,6 +1114,7 @@ const parsePseudocode = (text: string): ParseResult => {
         const size = Number(arregloMatch[2])
         arrays.set(name, size)
         pushLine(`let ${name} = Array(${size}).fill("");`)
+        pushLine(`__trace(${lineNumber}, ${buildTraceArrayFor(scopeKey, [name])});`)
         return
       }
       if (lower.startsWith('leer ')) {
@@ -1096,13 +1122,14 @@ const parsePseudocode = (text: string): ParseResult => {
         const arrayMatch = parseArrayAccess(target)
         if (arrayMatch) {
           const name = arrayMatch[1]
-          const index = translateIndices(arrayMatch[2])
+          const index = `(${translateIndices(arrayMatch[2])}) - 1`
           pushLine(`${name}[${index}] = await __readLine("${name}");`)
+          pushLine(`__trace(${lineNumber}, ${buildTraceArrayFor(scopeKey, [name])});`)
         } else {
           locals.add(target)
           pushLine(`${target} = await __readLine("${target}");`)
+          pushLine(`__trace(${lineNumber}, ${buildTraceArrayFor(scopeKey, [target])});`)
         }
-        pushLine(`__trace(${lineNumber}, ${traceVars});`)
         return
       }
       const mientrasMatch = parseMientras(line)
@@ -1119,12 +1146,18 @@ const parsePseudocode = (text: string): ParseResult => {
       const paraMatch = parsePara(line)
       if (paraMatch) {
         locals.add(paraMatch[1])
+        const idx = loopIndex++
+        const startVar = `__start${idx}`
+        const endVar = `__end${idx}`
+        const stepVar = `__step${idx}`
+        pushLine(`const ${startVar} = ${translateIndices(paraMatch[2])};`)
+        pushLine(`const ${endVar} = ${translateIndices(paraMatch[3])};`)
+        pushLine(`const ${stepVar} = ${startVar} <= ${endVar} ? 1 : -1;`)
         pushLine(
-          `for (let ${paraMatch[1]} = ${translateIndices(paraMatch[2])}; ${paraMatch[1]} <= ${translateIndices(
-            paraMatch[3]
-          )}; ${paraMatch[1]} += 1) {`
+          `for (let ${paraMatch[1]} = ${startVar}; ${stepVar} > 0 ? ${paraMatch[1]} <= ${endVar} : ${paraMatch[1]} >= ${endVar}; ${paraMatch[1]} += ${stepVar}) {`
         )
         indent += 1
+        pushLine(`__trace(${lineNumber}, ${buildTraceArrayFor(scopeKey, [paraMatch[1]], 'force')});`)
         return
       }
       if (lower === 'finpara') {
@@ -1200,7 +1233,7 @@ const parsePseudocode = (text: string): ParseResult => {
     const traceVars = buildTraceArray(`fn:${fn.name}`)
     const clearVars = buildTraceArray(`fn:${fn.name}`, 'cleared')
     const outputVars = buildTraceArray(`fn:${fn.name}`, 'empty')
-    const jsBody = emitJsBody(fn.body, locals, traceVars, clearVars, outputVars, arrays)
+    const jsBody = emitJsBody(fn.body, locals, clearVars, outputVars, `fn:${fn.name}`, arrays)
     const params = fn.params.map((param) => `const char* ${param}`).join(', ')
     cLines.push(`void ${fn.name}(${params}) {`)
     locals.forEach((name) => {
@@ -1226,9 +1259,15 @@ const parsePseudocode = (text: string): ParseResult => {
   const mainLocals = new Set<string>()
   const mainArrays = new Map<string, number>()
   const mainBodyLines = emitBody(mainBody, mainLocals, mainArrays)
-  const mainTraceVars = buildTraceArray('main')
   const mainOutputVars = buildTraceArray('main', 'empty')
-  const mainJsBodyLines = emitJsBody(mainBody, mainLocals, mainTraceVars, null, mainOutputVars, mainArrays)
+  const mainJsBodyLines = emitJsBody(
+    mainBody,
+    mainLocals,
+    null,
+    mainOutputVars,
+    'main',
+    mainArrays
+  )
   cLines.push('int main(void) {')
   mainLocals.forEach((name) => {
     cLines.push(`  char ${name}[100];`)

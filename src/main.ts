@@ -145,9 +145,13 @@ const clearConsole = () => {
 }
 
 type ClearedTraceValue = { __cleared: true; value: unknown }
+type ForcedTraceValue = { __force: true; value: unknown }
 
 const isClearedTraceValue = (value: unknown): value is ClearedTraceValue =>
   typeof value === 'object' && value !== null && '__cleared' in value
+
+const isForcedTraceValue = (value: unknown): value is ForcedTraceValue =>
+  typeof value === 'object' && value !== null && '__force' in value
 
 const formatTraceValue = (value: unknown): string => {
   if (value === null || value === undefined) return ''
@@ -194,15 +198,19 @@ const appendTraceRow = (lineNumber: number, vars: unknown[], output?: string) =>
     const value = vars[index]
     const serialized = isClearedTraceValue(value)
       ? `cleared:${formatTraceValue(value.value)}`
-      : `value:${formatTraceValue(value)}`
+      : isForcedTraceValue(value)
+        ? `force:${formatTraceValue(value.value)}`
+        : `value:${formatTraceValue(value)}`
     const last = traceLastValues[index]
 
-    if (serialized !== 'value:' && serialized !== last) {
+    if (serialized !== 'value:' && (serialized !== last || isForcedTraceValue(value))) {
       if (isClearedTraceValue(value)) {
         const span = document.createElement('span')
         span.classList.add('trace-cleared')
         span.textContent = formatTraceValue(value.value)
         cell.appendChild(span)
+      } else if (isForcedTraceValue(value)) {
+        cell.textContent = formatTraceValue(value.value)
       } else {
         cell.textContent = formatTraceValue(value)
       }
