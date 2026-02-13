@@ -1,6 +1,6 @@
 import './style.css'
 import { EditorState } from '@codemirror/state'
-import { EditorView, keymap, highlightActiveLine } from '@codemirror/view'
+import { EditorView, keymap, highlightActiveLine, lineNumbers } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { lintGutter, linter } from '@codemirror/lint'
 import { highlightSelectionMatches } from '@codemirror/search'
@@ -60,6 +60,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           <button class="tab active" data-tab="flow">Diagrama de flujo</button>
           <button class="tab" data-tab="c">Traduccion a C</button>
           <button class="tab" data-tab="run">Ejecucion</button>
+          <button class="tab" data-tab="trace">Seguimiento</button>
         </div>
         <div class="tab-panels">
           <div class="panel active" id="panel-flow">
@@ -81,6 +82,16 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
               </div>
             </div>
           </div>
+          <div class="panel" id="panel-trace">
+            <div class="trace">
+              <table class="trace-table">
+                <thead>
+                  <tr id="trace-header"></tr>
+                </thead>
+                <tbody id="trace-body"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -95,6 +106,8 @@ const consoleInputEl = document.querySelector<HTMLInputElement>('#console-input'
 const consoleSendBtn = document.querySelector<HTMLButtonElement>('#console-send')
 const consoleRunBtn = document.querySelector<HTMLButtonElement>('#console-run')
 const consoleClearBtn = document.querySelector<HTMLButtonElement>('#console-clear')
+const traceHeaderEl = document.querySelector<HTMLTableRowElement>('#trace-header')
+const traceBodyEl = document.querySelector<HTMLTableSectionElement>('#trace-body')
 
 if (
   !editorParent ||
@@ -104,7 +117,9 @@ if (
   !consoleInputEl ||
   !consoleSendBtn ||
   !consoleRunBtn ||
-  !consoleClearBtn
+  !consoleClearBtn ||
+  !traceHeaderEl ||
+  !traceBodyEl
 ) {
   throw new Error('No se pudo inicializar la interfaz.')
 }
@@ -113,6 +128,8 @@ let lastDoc = initialCode
 let runnerPromise: Promise<void> | null = null
 let waitingResolver: ((value: string) => void) | null = null
 let mermaidCounter = 0
+let traceVariables: string[] = []
+let traceLastValues: string[] = []
 
 mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' })
 
@@ -125,6 +142,80 @@ const appendConsole = (text: string) => {
 
 const clearConsole = () => {
   consoleOutputEl.innerHTML = ''
+}
+
+type ClearedTraceValue = { __cleared: true; value: unknown }
+
+const isClearedTraceValue = (value: unknown): value is ClearedTraceValue =>
+  typeof value === 'object' && value !== null && '__cleared' in value
+
+const formatTraceValue = (value: unknown): string => {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => formatTraceValue(item)).join(',')}]`
+  }
+  return String(value)
+}
+
+const clearTrace = () => {
+  traceBodyEl.innerHTML = ''
+  traceLastValues = []
+}
+
+const renderTraceHeader = (variables: string[]) => {
+  traceHeaderEl.innerHTML = ''
+  const lineHeader = document.createElement('th')
+  lineHeader.textContent = 'Nro de linea'
+  traceHeaderEl.appendChild(lineHeader)
+
+  variables.forEach((name) => {
+    const th = document.createElement('th')
+    th.textContent = name
+    traceHeaderEl.appendChild(th)
+  })
+
+  const outHeader = document.createElement('th')
+  outHeader.textContent = 'Salida'
+  traceHeaderEl.appendChild(outHeader)
+
+  traceVariables = variables
+  traceLastValues = []
+}
+
+const appendTraceRow = (lineNumber: number, vars: unknown[], output?: string) => {
+  const row = document.createElement('tr')
+
+  const lineCell = document.createElement('td')
+  lineCell.textContent = String(lineNumber)
+  row.appendChild(lineCell)
+
+  traceVariables.forEach((_, index) => {
+    const cell = document.createElement('td')
+    const value = vars[index]
+    const serialized = isClearedTraceValue(value)
+      ? `cleared:${formatTraceValue(value.value)}`
+      : `value:${formatTraceValue(value)}`
+    const last = traceLastValues[index]
+
+    if (serialized !== 'value:' && serialized !== last) {
+      if (isClearedTraceValue(value)) {
+        const span = document.createElement('span')
+        span.classList.add('trace-cleared')
+        span.textContent = formatTraceValue(value.value)
+        cell.appendChild(span)
+      } else {
+        cell.textContent = formatTraceValue(value)
+      }
+      traceLastValues[index] = serialized
+    }
+    row.appendChild(cell)
+  })
+
+  const outCell = document.createElement('td')
+  outCell.textContent = output === undefined || output === null ? '' : String(output)
+  row.appendChild(outCell)
+
+  traceBodyEl.appendChild(row)
 }
 
 const renderMermaid = async (diagram: string) => {
@@ -144,6 +235,7 @@ const updateOutputs = (text: string) => {
 
   cCodeEl.textContent = result.cCode
   void renderMermaid(result.mermaidCode)
+  renderTraceHeader(result.variables)
 }
 
 const editor = new EditorView({
@@ -156,6 +248,7 @@ const editor = new EditorView({
       indentOnInput(),
       indentUnit.of('  '),
       highlightActiveLine(),
+      lineNumbers(),
       highlightSelectionMatches(),
       lintGutter(),
       linter((view) => lintPseudocode(view.state.doc.toString())),
@@ -177,7 +270,8 @@ const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.tab'))
 const panels = {
   flow: document.querySelector<HTMLDivElement>('#panel-flow'),
   c: document.querySelector<HTMLDivElement>('#panel-c'),
-  run: document.querySelector<HTMLDivElement>('#panel-run')
+  run: document.querySelector<HTMLDivElement>('#panel-run'),
+  trace: document.querySelector<HTMLDivElement>('#panel-trace')
 }
 
 tabs.forEach((tab) => {
@@ -200,6 +294,7 @@ const executeProgram = async () => {
   if (runnerPromise) return
 
   clearConsole()
+  clearTrace()
   appendConsole('> Ejecutando...')
   const source = analyzePseudocode(lastDoc)
   const io = {
@@ -209,10 +304,17 @@ const executeProgram = async () => {
         waitingResolver = resolve
         consoleInputEl.placeholder = label ? `Entrada: ${label}` : 'Ingresa un valor...'
         consoleInputEl.focus()
-      })
+      }),
+    trace: (line: number, vars: unknown[], output?: string) => {
+      appendTraceRow(line, vars, output)
+    }
   }
 
-  const runFn = new Function('io', source.jsCode) as (io: { write: (t: string) => void; read: (l: string) => Promise<string> }) => Promise<void>
+  const runFn = new Function('io', source.jsCode) as (io: {
+    write: (t: string) => void
+    read: (l: string) => Promise<string>
+    trace?: (line: number, vars: unknown[], output?: string) => void
+  }) => Promise<void>
 
   runnerPromise = runFn(io)
     .catch((error) => {

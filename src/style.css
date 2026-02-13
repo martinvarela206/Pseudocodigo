@@ -366,6 +366,43 @@ h1 {
   gap: 8px;
 }
 
+.trace {
+  flex: 1;
+  background: #fffdf9;
+  border: 1px solid #ecdcc9;
+  border-radius: 14px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.trace-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Courier New', 'Courier', monospace;
+  font-size: 0.9rem;
+}
+
+.trace-table th,
+.trace-table td {
+  border: 1px solid #e6dacb;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.trace-table th {
+  background: #f4efe9;
+  color: #4b3a2a;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.trace-cleared {
+  color: #a18972;
+  text-decoration: line-through;
+}
+
 @media (max-width: 960px) {
   .workspace {
     grid-template-columns: 1fr;

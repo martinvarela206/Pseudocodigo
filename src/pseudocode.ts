@@ -7,6 +7,7 @@ const keywords = new Set([
   'funcion',
   'inicio',
   'fin',
+  'arreglo',
   'leer',
   'escribir',
   'volver',
@@ -29,7 +30,13 @@ type BlockType = 'funcion' | 'inicio' | 'mientras' | 'para' | 'repetir' | 'si'
 type FunctionBlock = {
   name: string
   params: string[]
-  body: string[]
+  body: BodyLine[]
+  headerLine: number
+}
+
+type BodyLine = {
+  text: string
+  line: number
 }
 
 type ParseResult = {
@@ -38,6 +45,7 @@ type ParseResult = {
   jsCode: string
   mermaidCode: string
   diagnostics: Diagnostic[]
+  variables: string[]
 }
 
 const pseudocodeParser: StreamParser<unknown> = {
@@ -77,6 +85,15 @@ const parsePara = (line: string) =>
 
 const parseSi = (line: string) => /^si\s+(.+)$/i.exec(line)
 
+const parseArreglo = (line: string) =>
+  /^arreglo\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[(\d+)\]\s*$/i.exec(line)
+
+const parseArrayAccess = (text: string) => /^([A-Za-z_][A-Za-z0-9_]*)\s*\[(.+)\]$/.exec(text)
+
+const translateIndices = (expr: string) =>
+  expr.replace(/([A-Za-z_][A-Za-z0-9_]*)\s*\[([^\]]+)\]/g, (_match, name, index) => {
+    return `${name}[(${index}) - 1]`
+  })
 const isKnownStatement = (line: string) => {
   const lower = line.toLowerCase()
   return (
@@ -84,6 +101,7 @@ const isKnownStatement = (line: string) => {
     lower.startsWith('funcion ') ||
     lower === 'inicio' ||
     lower === 'fin' ||
+    lower.startsWith('arreglo ') ||
     lower.startsWith('mientras') ||
     lower === 'finmientras' ||
     lower.startsWith('para ') ||
@@ -200,7 +218,7 @@ const parsePseudocode = (text: string): ParseResult => {
   let inMain = false
   let currentFunction: FunctionBlock | null = null
   const functions: FunctionBlock[] = []
-  const mainBody: string[] = []
+  const mainBody: BodyLine[] = []
   const blockStack: { type: BlockType; line: number }[] = []
   let indentLevel = 0
 
@@ -272,7 +290,7 @@ const parsePseudocode = (text: string): ParseResult => {
         })
         return
       }
-      currentFunction = { name: header.name, params: header.params, body: [] }
+      currentFunction = { name: header.name, params: header.params, body: [], headerLine: index + 1 }
       functions.push(currentFunction)
       blockStack.push({ type: 'funcion', line: index })
       return
@@ -289,11 +307,11 @@ const parsePseudocode = (text: string): ParseResult => {
       blockStack.push({ type: 'mientras', line: index })
       indentLevel += 1
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -311,11 +329,11 @@ const parsePseudocode = (text: string): ParseResult => {
       }
       indentLevel = Math.max(0, indentLevel - 1)
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -324,11 +342,11 @@ const parsePseudocode = (text: string): ParseResult => {
       blockStack.push({ type: 'para', line: index })
       indentLevel += 1
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -346,11 +364,11 @@ const parsePseudocode = (text: string): ParseResult => {
       }
       indentLevel = Math.max(0, indentLevel - 1)
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -359,11 +377,11 @@ const parsePseudocode = (text: string): ParseResult => {
       blockStack.push({ type: 'repetir', line: index })
       indentLevel += 1
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -381,11 +399,11 @@ const parsePseudocode = (text: string): ParseResult => {
       }
       indentLevel = Math.max(0, indentLevel - 1)
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -395,11 +413,23 @@ const parsePseudocode = (text: string): ParseResult => {
       blockStack.push({ type: 'si', line: index })
       indentLevel += 1
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
+      }
+      return
+    }
+
+    const arregloMatch = parseArreglo(line)
+    if (arregloMatch) {
+      if (currentFunction) {
+        currentFunction.body.push({ text: line, line: index + 1 })
+        return
+      }
+      if (inMain) {
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -421,11 +451,11 @@ const parsePseudocode = (text: string): ParseResult => {
         indentLevel = Math.max(0, indentLevel - 1) + 1
       }
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -443,11 +473,11 @@ const parsePseudocode = (text: string): ParseResult => {
       }
       indentLevel = Math.max(0, indentLevel - 2)
       if (currentFunction) {
-        currentFunction.body.push(line)
+        currentFunction.body.push({ text: line, line: index + 1 })
         return
       }
       if (inMain) {
-        mainBody.push(line)
+        mainBody.push({ text: line, line: index + 1 })
       }
       return
     }
@@ -483,12 +513,12 @@ const parsePseudocode = (text: string): ParseResult => {
     }
 
     if (currentFunction) {
-      currentFunction.body.push(line)
+      currentFunction.body.push({ text: line, line: index + 1 })
       return
     }
 
     if (inMain) {
-      mainBody.push(line)
+      mainBody.push({ text: line, line: index + 1 })
     }
   })
 
@@ -535,7 +565,8 @@ const parsePseudocode = (text: string): ParseResult => {
     return null
   }
 
-  mainBody.forEach((line) => {
+  mainBody.forEach((entry) => {
+    const line = entry.text
     const lower = line.toLowerCase()
     if (lower.startsWith('leer ')) {
       const target = line.slice('leer '.length).trim()
@@ -609,7 +640,7 @@ const parsePseudocode = (text: string): ParseResult => {
   })
   pushFlow('Fin')
 
-  const buildMermaid = (body: string[]) => {
+  const buildMermaid = (body: BodyLine[]) => {
     let nodeId = 0
     const nodes: string[] = []
     const edges: string[] = []
@@ -713,7 +744,8 @@ const parsePseudocode = (text: string): ParseResult => {
       }
     }
 
-    body.forEach((line) => {
+    body.forEach((entry) => {
+      const line = entry.text
       const lower = line.toLowerCase()
 
       const mientrasMatch = parseMientras(line)
@@ -869,12 +901,60 @@ const parsePseudocode = (text: string): ParseResult => {
   cLines.push('#include <stdio.h>')
   cLines.push('')
 
+  const collectScopeVars = (body: BodyLine[], initial: string[] = []) => {
+    const vars = new Set(initial)
+    body.forEach((entry) => {
+      const lower = entry.text.toLowerCase()
+      if (lower.startsWith('leer ')) {
+        const target = entry.text.slice('leer '.length).trim()
+        const arrayMatch = parseArrayAccess(target)
+        vars.add(arrayMatch ? arrayMatch[1] : target)
+      }
+      const arregloMatch = parseArreglo(entry.text)
+      if (arregloMatch) vars.add(arregloMatch[1])
+      const paraMatch = parsePara(entry.text)
+      if (paraMatch) vars.add(paraMatch[1])
+    })
+    return Array.from(vars)
+  }
+
+  const mainScopeVars = collectScopeVars(mainBody)
+  const functionScopes = functions.map((fn) => ({
+    name: fn.name,
+    vars: collectScopeVars(fn.body, fn.params)
+  }))
+
+  const variableSlots: { label: string; scope: string; name: string }[] = []
+  const pushSlots = (scope: string, vars: string[]) => {
+    vars.forEach((name) => {
+      variableSlots.push({ label: name, scope, name })
+    })
+  }
+
+  pushSlots('main', mainScopeVars)
+  functionScopes.forEach((scope) => pushSlots(`fn:${scope.name}`, scope.vars))
+
+  const buildTraceArray = (scope: string, mode: 'value' | 'cleared' | 'empty' = 'value') => {
+    if (!variableSlots.length) return '[]'
+    const entries = variableSlots.map((slot) => {
+      if (slot.scope !== scope) return '""'
+      if (mode === 'cleared') return `{ __cleared: true, value: ${slot.name} }`
+      if (mode === 'empty') return '""'
+      return `(typeof ${slot.name} === "undefined" ? "" : ${slot.name})`
+    })
+    return `[${entries.join(', ')}]`
+  }
+
   const jsLines: string[] = []
   jsLines.push('return (async () => {')
   jsLines.push('  const __write = (text) => io.write(String(text));')
   jsLines.push('  const __readLine = (label) => io.read(label);')
+  jsLines.push('  const __trace = (line, vars, output = "") => {')
+  jsLines.push('    if (io.trace) io.trace(line, vars, output);')
+  jsLines.push('    return true;')
+  jsLines.push('  };')
 
-  const emitBody = (body: string[], locals: Set<string>) => {
+  const emitBody = (body: BodyLine[], locals: Set<string>, arrays: Map<string, number>) => {
     const lines: string[] = []
     let indent = 1
     const pushLine = (text: string, indentOffset = 0) => {
@@ -882,17 +962,33 @@ const parsePseudocode = (text: string): ParseResult => {
       lines.push(`${'  '.repeat(level)}${text}`)
     }
 
-    body.forEach((line) => {
+    body.forEach((entry) => {
+      const line = entry.text
       const lower = line.toLowerCase()
+      const arregloMatch = parseArreglo(line)
+      if (arregloMatch) {
+        const name = arregloMatch[1]
+        const size = Number(arregloMatch[2])
+        arrays.set(name, size)
+        pushLine(`char ${name}[${size}][100];`)
+        return
+      }
       if (lower.startsWith('leer ')) {
         const target = line.slice('leer '.length).trim()
+        const arrayMatch = parseArrayAccess(target)
+        if (arrayMatch) {
+          const name = arrayMatch[1]
+          const index = translateIndices(arrayMatch[2])
+          pushLine(`scanf("%99s", ${name}[${index}]);`)
+          return
+        }
         locals.add(target)
         pushLine(`scanf("%99s", ${target});`)
         return
       }
       const mientrasMatch = parseMientras(line)
       if (mientrasMatch) {
-        pushLine(`while (${mientrasMatch[1]}) {`)
+        pushLine(`while (${translateIndices(mientrasMatch[1])}) {`)
         indent += 1
         return
       }
@@ -903,9 +999,9 @@ const parsePseudocode = (text: string): ParseResult => {
       }
       const paraMatch = parsePara(line)
       if (paraMatch) {
-        pushLine(
-          `for (int ${paraMatch[1]} = ${paraMatch[2]}; ${paraMatch[1]} <= ${paraMatch[3]}; ${paraMatch[1]} += 1) {`
-        )
+        const startExpr = translateIndices(paraMatch[2])
+        const endExpr = translateIndices(paraMatch[3])
+        pushLine(`for (int ${paraMatch[1]} = ${startExpr}; ${paraMatch[1]} <= ${endExpr}; ${paraMatch[1]} += 1) {`)
         indent += 1
         return
       }
@@ -922,12 +1018,12 @@ const parsePseudocode = (text: string): ParseResult => {
       const hastaMatch = parseHasta(line)
       if (hastaMatch) {
         indent = Math.max(1, indent - 1)
-        pushLine(`} while (!(${hastaMatch[1]}));`)
+        pushLine(`} while (!(${translateIndices(hastaMatch[1])}));`)
         return
       }
       const siMatch = parseSi(line)
       if (siMatch) {
-        pushLine(`if (${siMatch[1]}) {`)
+        pushLine(`if (${translateIndices(siMatch[1])}) {`)
         indent += 1
         return
       }
@@ -947,7 +1043,10 @@ const parsePseudocode = (text: string): ParseResult => {
       }
       if (lower.startsWith('escribir ')) {
         const rawArgs = line.slice('escribir '.length).trim()
-        const args = parseArguments(rawArgs)
+        const args = parseArguments(rawArgs).map((arg) => {
+          if (arg.startsWith('"') && arg.endsWith('"')) return arg
+          return translateIndices(arg)
+        })
         pushLine(buildPrintf(args))
         return
       }
@@ -964,25 +1063,51 @@ const parsePseudocode = (text: string): ParseResult => {
     return lines
   }
 
-  const emitJsBody = (body: string[], locals: Set<string>) => {
+  const emitJsBody = (
+    body: BodyLine[],
+    locals: Set<string>,
+    traceVars: string,
+    clearVars: string | null,
+    outputVars: string,
+    arrays: Map<string, number>
+  ) => {
     const lines: string[] = []
     let indent = 1
+    let outIndex = 0
     const pushLine = (text: string, indentOffset = 0) => {
       const level = Math.max(0, indent + indentOffset)
       lines.push(`${'  '.repeat(level)}${text}`)
     }
 
-    body.forEach((line) => {
+    body.forEach((entry) => {
+      const line = entry.text
+      const lineNumber = entry.line
       const lower = line.toLowerCase()
+      const arregloMatch = parseArreglo(line)
+      if (arregloMatch) {
+        const name = arregloMatch[1]
+        const size = Number(arregloMatch[2])
+        arrays.set(name, size)
+        pushLine(`let ${name} = Array(${size}).fill("");`)
+        return
+      }
       if (lower.startsWith('leer ')) {
         const target = line.slice('leer '.length).trim()
-        locals.add(target)
-        pushLine(`${target} = await __readLine("${target}");`)
+        const arrayMatch = parseArrayAccess(target)
+        if (arrayMatch) {
+          const name = arrayMatch[1]
+          const index = translateIndices(arrayMatch[2])
+          pushLine(`${name}[${index}] = await __readLine("${name}");`)
+        } else {
+          locals.add(target)
+          pushLine(`${target} = await __readLine("${target}");`)
+        }
+        pushLine(`__trace(${lineNumber}, ${traceVars});`)
         return
       }
       const mientrasMatch = parseMientras(line)
       if (mientrasMatch) {
-        pushLine(`while (${mientrasMatch[1]}) {`)
+        pushLine(`while (${translateIndices(mientrasMatch[1])}) {`)
         indent += 1
         return
       }
@@ -994,7 +1119,11 @@ const parsePseudocode = (text: string): ParseResult => {
       const paraMatch = parsePara(line)
       if (paraMatch) {
         locals.add(paraMatch[1])
-        pushLine(`for (let ${paraMatch[1]} = ${paraMatch[2]}; ${paraMatch[1]} <= ${paraMatch[3]}; ${paraMatch[1]} += 1) {`)
+        pushLine(
+          `for (let ${paraMatch[1]} = ${translateIndices(paraMatch[2])}; ${paraMatch[1]} <= ${translateIndices(
+            paraMatch[3]
+          )}; ${paraMatch[1]} += 1) {`
+        )
         indent += 1
         return
       }
@@ -1011,12 +1140,12 @@ const parsePseudocode = (text: string): ParseResult => {
       const hastaMatch = parseHasta(line)
       if (hastaMatch) {
         indent = Math.max(1, indent - 1)
-        pushLine(`} while (!(${hastaMatch[1]}));`)
+        pushLine(`} while (!(${translateIndices(hastaMatch[1])}));`)
         return
       }
       const siMatch = parseSi(line)
       if (siMatch) {
-        pushLine(`if (${siMatch[1]}) {`)
+        pushLine(`if (${translateIndices(siMatch[1])}) {`)
         indent += 1
         return
       }
@@ -1039,12 +1168,19 @@ const parsePseudocode = (text: string): ParseResult => {
         const args = parseArguments(rawArgs)
         const parts = args.map((arg) => {
           if (arg.startsWith('"') && arg.endsWith('"')) return arg
-          return `String(${arg})`
+          return `String(${translateIndices(arg)})`
         })
-        pushLine(`__write(${parts.join(' + ')});`)
+        const outVar = `__out${outIndex++}`
+        const outExpr = parts.length ? parts.join(' + ') : '""'
+        pushLine(`const ${outVar} = ${outExpr};`)
+        pushLine(`__write(${outVar});`)
+        pushLine(`__trace(${lineNumber}, ${outputVars}, ${outVar});`)
         return
       }
       if (lower === 'volver') {
+        if (clearVars) {
+          pushLine(`__trace(${lineNumber}, ${clearVars});`)
+        }
         pushLine('return;')
         return
       }
@@ -1059,8 +1195,12 @@ const parsePseudocode = (text: string): ParseResult => {
 
   functions.forEach((fn) => {
     const locals = new Set<string>()
-    const body = emitBody(fn.body, locals)
-    const jsBody = emitJsBody(fn.body, locals)
+    const arrays = new Map<string, number>()
+    const body = emitBody(fn.body, locals, arrays)
+    const traceVars = buildTraceArray(`fn:${fn.name}`)
+    const clearVars = buildTraceArray(`fn:${fn.name}`, 'cleared')
+    const outputVars = buildTraceArray(`fn:${fn.name}`, 'empty')
+    const jsBody = emitJsBody(fn.body, locals, traceVars, clearVars, outputVars, arrays)
     const params = fn.params.map((param) => `const char* ${param}`).join(', ')
     cLines.push(`void ${fn.name}(${params}) {`)
     locals.forEach((name) => {
@@ -1078,13 +1218,17 @@ const parsePseudocode = (text: string): ParseResult => {
         jsLines.push(`    let ${name};`)
       }
     })
+    jsLines.push(`    __trace(${fn.headerLine}, ${traceVars});`)
     jsBody.forEach((line) => jsLines.push(`  ${line}`))
     jsLines.push('  }')
   })
 
   const mainLocals = new Set<string>()
-  const mainBodyLines = emitBody(mainBody, mainLocals)
-  const mainJsBodyLines = emitJsBody(mainBody, mainLocals)
+  const mainArrays = new Map<string, number>()
+  const mainBodyLines = emitBody(mainBody, mainLocals, mainArrays)
+  const mainTraceVars = buildTraceArray('main')
+  const mainOutputVars = buildTraceArray('main', 'empty')
+  const mainJsBodyLines = emitJsBody(mainBody, mainLocals, mainTraceVars, null, mainOutputVars, mainArrays)
   cLines.push('int main(void) {')
   mainLocals.forEach((name) => {
     cLines.push(`  char ${name}[100];`)
@@ -1107,7 +1251,8 @@ const parsePseudocode = (text: string): ParseResult => {
     cCode: cLines.join('\n'),
     jsCode: jsLines.join('\n'),
     mermaidCode: buildMermaid(mainBody),
-    diagnostics
+    diagnostics,
+    variables: variableSlots.map((slot) => slot.label)
   }
 }
 
